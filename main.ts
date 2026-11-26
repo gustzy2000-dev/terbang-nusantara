@@ -1,31 +1,26 @@
-// Terbang Nusantara — entry untuk best-flight-game-20261126-0057 (Node 22, stdlib saja).
-// Menyalin game/ dan screenshots/ dari repo ini ke /output lalu menulis /output/dossier.json
-// dengan buildDossier dari vendor/makefun-game.ts, seperti starter kit.
-// Di luar grader, MAKEFUN_OUTPUT_DIR menggantikan /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Terbang Nusantara — program serah: menyalin game dan tangkapan layar
+// ke $MAKEFUN_OUTPUT_DIR, lalu menulis dossier.json untuk juri.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { buildDossier } from './vendor/makefun-game.ts';
+import { buildDossier } from "./vendor/makefun-game.ts";
+import { cp, mkdir, stat, writeFile } from "node:fs/promises";
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+await mkdir(outDir, { recursive: true });
+await cp("game", `${outDir}/game`, { recursive: true });
+await cp("screenshots", `${outDir}/screenshots`, { recursive: true });
 
-// Batas scorer: teks dossier 160 KiB; maksimal 4 screenshot @ 256 KiB;
-// game/ maksimal 993 file dan 48 MiB, tiap path maksimal 1000 byte.
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
-);
+// buildDossier mengembalikan dossier sebagai byte JSON kanonis
+// (tidak menulis berkas sendiri) — jadi tulis sendiri ke dossier.json.
+const dossierBytes = await buildDossier(outDir, {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+});
+await writeFile(`${outDir}/dossier.json`, dossierBytes);
+
+// Cetak ukuran dossier supaya kegagalan diam-diam langsung ketahuan.
+const dossierSize = (await stat(`${outDir}/dossier.json`)).size;
+console.log(`dossier.json: ${dossierSize} bytes -> ${outDir}/dossier.json`);

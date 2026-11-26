@@ -1,340 +1,330 @@
-// Terbang Nusantara — loop utama: misi, tabrakan, skor, layar, dan HUD.
-// Satu file, satu tugas: menjalankan game.
+// Terbang Nusantara — loop utama, tabrakan, dan HUD.
+// Fase: title -> brief -> flying -> done. Mode ?shot= menggambar satu
+// keadaan beku tanpa loop (untuk tangkapan layar).
 
-import { VIEW_W, VIEW_H, GROUND_Y, MISSIONS, PHYSICS, SCORES } from './config.js';
-import { buildWorld, groundHeightAt, hitsGround } from './world.js';
-import { makePlane, stepPlane, damagePlane, tryLand, altitudeOf, headingOf } from './plane.js';
-import { drawScene, drawAltGauge, drawSpeedGauge, drawHeadingGauge } from './render.js';
-import { makeAudio, startEngine, setEngine, stopEngine, playRing, playCoin, playCrash, playLand, playClick, toggleMute } from './audio.js';
-import { makeInput } from './input.js';
-import { parseShot, shotState, freezeAnimations } from './shots.js';
+import { VIEW_W, VIEW_H, GROUND_Y, MISSIONS, PHYSICS, SCORES } from "./config.js";
+import { clamp } from "./random.js";
+import { buildWorld, groundHeightAt, hitsGround, distanceToRunway } from "./world.js";
+import { makePlane, stepPlane, damagePlane, canLand } from "./plane.js";
+import { drawScene, drawGauges } from "./render.js";
+import { createAudio } from "./audio.js";
+import { createInput } from "./input.js";
+import { parseShot, shotState, freezeAnimations } from "./shots.js";
 
-const canvas = document.getElementById('cv');
-const ctx = canvas.getContext('2d');
-
-const els = {
-  mission: document.getElementById('hudMission'),
-  score: document.getElementById('hudScore'),
-  rings: document.getElementById('hudRings'),
-  timer: document.getElementById('hudTimer'),
-  fuel: document.getElementById('fuelFill'),
-  fuelWrap: document.getElementById('fuelWrap'),
-  hearts: document.getElementById('hudHearts'),
-  thr: document.getElementById('thrFill'),
-  toast: document.getElementById('toast'),
-  tag: document.getElementById('missionTag'),
-  vAlt: document.getElementById('vAlt'),
-  vSpd: document.getElementById('vSpd'),
-  vHdg: document.getElementById('vHdg'),
-  gAlt: document.getElementById('gAlt'),
-  gSpd: document.getElementById('gSpd'),
-  gHdg: document.getElementById('gHdg'),
-  title: document.getElementById('titleScreen'),
-  brief: document.getElementById('briefScreen'),
-  end: document.getElementById('endScreen'),
-  briefTitle: document.getElementById('briefTitle'),
-  briefText: document.getElementById('briefText'),
-  briefStats: document.getElementById('briefStats'),
-  endTitle: document.getElementById('endTitle'),
-  endText: document.getElementById('endText'),
-  endStats: document.getElementById('endStats'),
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const $ = (id) => document.getElementById(id);
+const hud = {
+  mission: $("hudMission"),
+  fuel: $("hudFuelFill"),
+  fuelText: $("hudFuelText"),
+  hearts: $("hudHearts"),
+  timer: $("hudTimer"),
+  score: $("hudScore"),
+  rings: $("hudRings"),
+  dist: $("hudDist"),
+  throttle: $("throttleFill"),
+  toast: $("toast"),
 };
 
-const input = makeInput();
-const audio = makeAudio();
+const audio = createAudio();
+const input = createInput(cv);
 
-const shot = parseShot();
 let state = null;
-let phase = 'title'; // title | brief | flying | done
-let missionIndex = 0;
-let score = 0;
-let ringsGot = 0;
-let coinsGot = 0;
-let timeLeft = 0;
-let time = 0;
-let lastTs = 0;
-let toastTimer = 0;
-let tagTimer = 0;
+let paused = false;
+let prevPause = false;
+let prevMuted = false;
 
-function newMission(index) {
-  missionIndex = index;
-  const mission = MISSIONS[index];
-  const world = buildWorld(mission, 1000 + index * 77);
-  const plane = makePlane();
-  state = { mission, world, plane };
-  score = index === 0 ? 0 : score;
-  ringsGot = 0;
-  coinsGot = 0;
-  timeLeft = mission.timeLimit;
-  time = 0;
-  phase = 'brief';
-  showBrief(mission);
+function newGame(missionIndex) {
+  const mission = MISSIONS[missionIndex];
+  const seed = Math.floor(Math.random() * 100000);
+  return {
+    phase: "flying",
+    mission,
+    missionIndex,
+    world: buildWorld(mission, seed),
+    plane: makePlane(),
+    time: 0,
+    timeLeft: mission.time,
+    score: 0,
+    ringsPassed: 0,
+    nextRing: 0,
+    toast: "",
+    toastUntil: 0,
+    result: null,
+    muted: false,
+    seed,
+  };
 }
 
-function showBrief(mission) {
-  els.briefTitle.textContent = `Misi ${mission.id} — ${mission.name}`;
-  els.briefText.textContent = mission.brief;
-  els.briefStats.innerHTML =
-    stat(mission.rings, 'RING') + stat(mission.coins, 'KOIN') +
-    stat(mission.timeLimit + ' dtk', 'WAKTU') +
-    stat(mission.wind ? `Angin ${mission.wind}` : 'Tenang', 'CUACA');
-  els.brief.classList.remove('hidden');
-  els.title.classList.add('hidden');
-  els.end.classList.add('hidden');
-  updateHud();
-}
-
-function stat(value, label) {
-  return `<div class="stat"><b>${value}</b><span>${label}</span></div>`;
-}
-
-function showToast(text, seconds = 2) {
-  els.toast.textContent = text;
-  els.toast.style.display = 'block';
-  toastTimer = seconds;
-}
-
-function showTag(title, sub) {
-  els.tag.innerHTML = `${title}<small>${sub}</small>`;
-  els.tag.style.display = 'block';
-  tagTimer = 2.2;
-}
-
-function updateHud() {
-  if (!state) return;
-  const { mission, plane } = state;
-  els.mission.innerHTML =
-    `Misi ${mission.id} — ${mission.name}<small>${mission.goal}</small>`;
-  els.score.textContent = score.toLocaleString('id-ID');
-  els.rings.textContent = `${ringsGot}/${mission.rings}`;
-  els.timer.textContent = Math.max(0, Math.ceil(timeLeft));
-  els.fuel.style.width = plane.fuel + '%';
-  els.fuelWrap.classList.toggle('low', plane.fuel < 25);
-  els.hearts.textContent = '❤'.repeat(Math.max(0, plane.hearts)) + '🤍'.repeat(Math.max(0, PHYSICS.maxHearts - plane.hearts));
-  els.thr.style.width = Math.round(plane.throttle * 100) + '%';
-  els.vAlt.textContent = altitudeOf(plane);
-  els.vSpd.textContent = Math.round(plane.speed);
-  els.vHdg.textContent = String(headingOf(plane)).padStart(3, '0');
-  drawAltGauge(els.gAlt, plane);
-  drawSpeedGauge(els.gSpd, plane);
-  drawHeadingGauge(els.gHdg, plane);
-}
-
-function endMission(won, reason) {
-  phase = 'done';
-  stopEngine(audio);
-  const mission = state.mission;
-  let bonus = 0;
-  if (won) {
-    bonus = Math.round(timeLeft) * SCORES.timeBonusPerSec + SCORES.landing;
-    if (state.plane.hearts === PHYSICS.maxHearts) bonus += SCORES.perfectBonus;
-    score += bonus;
-    playLand(audio);
+function showOverlay(id) {
+  for (const el of ["overlayTitle", "overlayBrief", "overlayEnd"]) {
+    $(el).classList.toggle("hidden", el !== id);
   }
-  els.endTitle.textContent = won ? `Misi ${mission.id} Selesai!` : 'Penerbangan Gagal';
-  els.endText.textContent = won
-    ? `Kamu mendarat mulus di landasan. Bonus mendarat ${SCORES.landing} + bonus waktu ${Math.round(timeLeft) * SCORES.timeBonusPerSec}` +
-      (state.plane.hearts === PHYSICS.maxHearts ? ` + bonus sempurna ${SCORES.perfectBonus}` : '') + '.'
-    : reason;
-  els.endStats.innerHTML =
-    stat(score.toLocaleString('id-ID'), 'SKOR TOTAL') +
-    stat(`${ringsGot}/${mission.rings}`, 'RING') +
-    stat(coinsGot, 'KOIN') +
-    stat(Math.max(0, Math.ceil(timeLeft)) + ' dtk', 'SISA WAKTU');
-  document.getElementById('btnNext').textContent =
-    won && missionIndex < MISSIONS.length - 1 ? 'LANJUT MISI BERIKUTNYA' : 'MAIN LAGI DARI MISI 1';
-  els.end.classList.remove('hidden');
-  updateHud();
+  if (!id) {
+    for (const el of ["overlayTitle", "overlayBrief", "overlayEnd"]) $(el).classList.add("hidden");
+  }
 }
 
-function step(dt) {
-  if (phase !== 'flying' || !state) return;
-  const { mission, world, plane } = state;
-  time += dt;
-  timeLeft -= dt;
+function showToast(text) {
+  state.toast = text;
+  state.toastUntil = state.time + 2.4;
+  hud.toast.textContent = text;
+  hud.toast.classList.remove("hidden");
+}
 
-  if (input.paused) return;
+function startGame(missionIndex) {
+  state = newGame(missionIndex);
+  audio.ensure();
+  showOverlay(null);
+  hud.toast.classList.add("hidden");
+}
+
+function endGame(kind) {
+  state.phase = "done";
+  state.result = { kind, score: state.score };
+  const titles = {
+    landed: "Mendarat dengan Sempurna!",
+    crashed: "Pesawat Jatuh!",
+    fuel: "Bahan Bakar Habis!",
+    time: "Waktu Habis!",
+    past: "Melewati Landasan!",
+  };
+  const details = {
+    landed: "Semua cincin dilewati dan roda menyentuh landasan.",
+    crashed: "Pesawat menghantam tanah. Coba lagi dengan lebih hati-hati.",
+    fuel: "Tangki kosong di tengah jalan. Hemat bahan bakar lain kali.",
+    time: "Waktu misi habis sebelum mendarat.",
+    past: "Pesawat terbang melewati landasan tanpa mendarat.",
+  };
+  $("endTitle").textContent = titles[kind];
+  $("endDetail").textContent = details[kind];
+  $("endScore").textContent = `Skor: ${state.score}  •  Cincin: ${state.ringsPassed}/${state.mission.rings}`;
+  showOverlay("overlayEnd");
+  if (kind === "landed") audio.land();
+}
+
+function landPlane() {
+  const bonus = Math.max(0, Math.floor(state.timeLeft)) * SCORES.timeBonusPerSec;
+  const perfect = state.plane.hearts === PHYSICS.maxHearts ? SCORES.perfectBonus : 0;
+  state.score += SCORES.landing + bonus + perfect;
+  endGame("landed");
+}
+
+function update(dt) {
+  const { plane, world, mission } = state;
   stepPlane(plane, input, mission, dt);
-  setEngine(audio, plane.throttle, plane.speed);
+  state.time += dt;
+  state.timeLeft = mission.time - state.time;
+  audio.setEngine(plane.speed / (PHYSICS.maxSpeed + PHYSICS.boostSpeed), true);
 
-  // Ring: lewati lingkaran.
-  for (const ring of world.rings) {
-    if (ring.passed) continue;
+  // Cincin berikutnya: hanya cincin sesuai urutan yang bisa dilewati.
+  const ring = world.rings[state.nextRing];
+  if (ring) {
     const dx = plane.x - ring.x;
     const dy = plane.y - ring.y;
-    if (Math.hypot(dx, dy) < ring.r) {
+    if (dx * dx + dy * dy < (ring.r + 24) * (ring.r + 24)) {
       ring.passed = true;
-      ringsGot += 1;
-      score += SCORES.ring;
+      state.ringsPassed += 1;
+      state.nextRing += 1;
+      state.score += SCORES.ring;
       plane.fuel = Math.min(PHYSICS.maxFuel, plane.fuel + PHYSICS.ringFuel);
-      playRing(audio);
-      showToast(`Ring ${ring.id} dilewati! +${SCORES.ring}`);
-      if (ringsGot === mission.rings) showTag('SEMUA RING DILEWATI', 'Sekarang mendarat di landasan!');
+      audio.ring();
+      showToast(`Cincin ${ring.index + 1} dilewati! +${SCORES.ring} • Bahan bakar +${PHYSICS.ringFuel}`);
     }
   }
 
-  // Koin.
+  // Koin: tambah skor dan sedikit bahan bakar.
   for (const coin of world.coins) {
     if (coin.taken) continue;
-    if (Math.hypot(plane.x - coin.x, plane.y - coin.y) < 42) {
+    const dx = plane.x - coin.x;
+    const dy = plane.y - coin.y;
+    if (dx * dx + dy * dy < 30 * 30) {
       coin.taken = true;
-      coinsGot += 1;
-      score += SCORES.coin;
+      state.score += SCORES.coin;
       plane.fuel = Math.min(PHYSICS.maxFuel, plane.fuel + PHYSICS.coinFuel);
-      playCoin(audio);
+      audio.coin();
     }
   }
 
-  // Burung.
+  // Burung: tabrakan mengurangi nyawa dan memantulkan pesawat.
   for (const bird of world.birds) {
-    bird.x += bird.speed * dt;
-    bird.y = bird.baseY + Math.sin(time * 2 + bird.wing) * 26;
-    if (Math.hypot(plane.x - bird.x, plane.y - bird.y) < 34) {
-      if (damagePlane(plane)) {
-        playCrash(audio);
-        showToast('Menabrak burung! −1 nyawa');
-        if (plane.crashed) {
-          endMission(false, 'Pesawatmu jatuh setelah menabrak burung. Coba lagi, terbang lebih hati-hati.');
-          return;
-        }
-      }
-    }
-  }
-
-  // Daratan dan gunung.
-  if (hitsGround(world, plane.x, plane.y + 10)) {
-    if (tryLand(plane, world) && ringsGot === mission.rings) {
-      endMission(true);
-      return;
-    }
-    if (damagePlane(plane)) {
-      playCrash(audio);
-      showToast('Menabrak daratan! −1 nyawa');
-      if (plane.crashed) {
-        endMission(false, 'Pesawatmu jatuh ke daratan. Ingat: lewati semua ring dulu, baru mendarat.');
+    const bx = bird.baseX + Math.sin(state.time * bird.speed + bird.phase) * 60;
+    const by = bird.baseY + Math.sin(state.time * 1.3 + bird.phase) * 20;
+    const dx = plane.x - bx;
+    const dy = plane.y - by;
+    if (dx * dx + dy * dy < 36 * 36 && damagePlane(plane)) {
+      audio.crash();
+      plane.vy = -120;
+      plane.speed *= 0.8;
+      showToast("Menabrak burung! -1 nyawa");
+      if (plane.hearts <= 0) {
+        endGame("crashed");
         return;
       }
     }
   }
 
-  // Mendarat tanpa semua ring: ditolak, lepas landas lagi.
-  if (tryLand(plane, world) && ringsGot < mission.rings) {
-    plane.landed = false;
-    plane.y = GROUND_Y - 120;
-    plane.speed = 220;
-    showToast(`Belum bisa mendarat — ${mission.rings - ringsGot} ring lagi!`);
-  }
-
-  // Bahan bakar habis.
-  if (plane.fuel <= 0 && plane.speed < 130) {
-    plane.crashed = true;
-    endMission(false, 'Bahan bakar habis dan pesawat kehilangan kecepatan. Lewati ring untuk mengisi bahan bakar.');
-    return;
-  }
-
-  // Waktu habis.
-  if (timeLeft <= 0) {
-    endMission(false, 'Waktu habis sebelum kamu menyelesaikan misi. Coba lagi dengan rute yang lebih cepat.');
-    return;
-  }
-
-  // Keluar rute.
-  if (plane.x > world.distance + 200) {
-    endMission(false, 'Kamu terbang melewati ujung rute tanpa mendarat. Putar balik dan cari landasannya.');
-  }
-}
-
-function frame(ts) {
-  requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (ts - lastTs) / 1000 || 0.016);
-  lastTs = ts;
-
-  if (shot && state) {
-    // Mode screenshot: gambar sekali, beku.
-    drawScene(ctx, state, state.time);
-    updateHud();
-    return;
-  }
-
-  if (!state) {
-    // Layar judul: gambar dunia misi 1 sebagai latar.
-    const demo = { mission: MISSIONS[0], world: buildWorld(MISSIONS[0], 1000), plane: makePlane() };
-    demo.plane.x = 900;
-    demo.plane.y = 260;
-    drawScene(ctx, demo, ts / 1000);
-    return;
-  }
-
-  step(dt);
-  drawScene(ctx, state, time);
-  updateHud();
-
-  if (toastTimer > 0) {
-    toastTimer -= dt;
-    if (toastTimer <= 0) els.toast.style.display = 'none';
-  }
-  if (tagTimer > 0) {
-    tagTimer -= dt;
-    if (tagTimer <= 0) els.tag.style.display = 'none';
-  }
-}
-
-document.getElementById('btnStart').addEventListener('click', () => {
-  playClick(audio);
-  startEngine(audio);
-  newMission(0);
-});
-
-document.getElementById('btnFly').addEventListener('click', () => {
-  playClick(audio);
-  els.brief.classList.add('hidden');
-  phase = 'flying';
-  startEngine(audio);
-  showTag(`MISI ${state.mission.id}`, state.mission.name);
-});
-
-document.getElementById('btnNext').addEventListener('click', () => {
-  playClick(audio);
-  els.end.classList.add('hidden');
-  if (state.plane.landed && missionIndex < MISSIONS.length - 1) {
-    newMission(missionIndex + 1);
-  } else {
-    newMission(0);
-  }
-});
-
-document.getElementById('btnAgain').addEventListener('click', () => {
-  playClick(audio);
-  els.end.classList.add('hidden');
-  score = 0;
-  newMission(0);
-});
-
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'KeyM') {
-    const muted = toggleMute(audio);
-    showToast(muted ? 'Suara mati' : 'Suara hidup', 1.2);
-  }
-});
-
-// Mode screenshot: bangun keadaan beku, gambar sekali, jangan mulai loop interaktif.
-if (shot) {
-  const frozen = shotState(shot, MISSIONS);
-  if (frozen) {
-    state = { mission: frozen.mission, world: frozen.world, plane: frozen.plane, time: frozen.time };
-    score = frozen.score;
-    ringsGot = frozen.ringsGot;
-    timeLeft = frozen.mission.timeLimit - 20;
-    phase = frozen.phase === 'title' ? 'title' : 'flying';
-    freezeAnimations();
-    if (frozen.phase === 'title') {
-      els.title.classList.remove('hidden');
+  // Landasan: mendarat hanya kalau rendah dan pelan.
+  const rw = world.runway;
+  const overRunway = plane.x >= rw.x && plane.x <= rw.x + rw.w;
+  if (overRunway && plane.y >= GROUND_Y - 30) {
+    if (plane.speed < 260) {
+      if (state.ringsPassed >= mission.rings) {
+        landPlane();
+        return;
+      }
+      showToast("Selesaikan semua cincin dulu!");
+      plane.x -= 120;
+      plane.vy = -160;
+      plane.y = GROUND_Y - 60;
     } else {
-      els.title.classList.add('hidden');
+      // Mendarat terlalu cepat: memantul tanpa merusak pesawat.
+      showToast("Terlalu cepat! Pelankan sebelum mendarat.");
+      plane.y = GROUND_Y - 16;
+      plane.vy = -100;
+      plane.speed *= 0.75;
     }
-    drawScene(ctx, state, frozen.time);
-    updateHud();
+    return;
+  }
+
+  // Tanah atau gunung: tabrakan memantul; nyawa habis berarti jatuh.
+  if (hitsGround(plane, world)) {
+    if (damagePlane(plane)) {
+      audio.crash();
+      showToast("Menghantam tanah! -1 nyawa");
+    }
+    plane.y = groundHeightAt(plane.x, world) - 14;
+    plane.vy = -140;
+    plane.speed *= 0.7;
+    if (plane.hearts <= 0) {
+      endGame("crashed");
+      return;
+    }
+  }
+
+  // Tiga akhir misi lainnya.
+  if (plane.fuel <= 0) endGame("fuel");
+  else if (state.timeLeft <= 0) endGame("time");
+  else if (plane.x > rw.x + rw.w + 250) endGame("past");
+}
+
+function updateHUD() {
+  const { plane, mission } = state;
+  hud.mission.textContent = `Misi ${mission.id} — ${mission.name}`;
+  hud.fuel.style.width = `${plane.fuel}%`;
+  hud.fuelText.textContent = `${Math.round(plane.fuel)}%`;
+  hud.hearts.textContent = "♥".repeat(Math.max(0, plane.hearts)) + "♡".repeat(Math.max(0, 3 - plane.hearts));
+  const t = Math.max(0, Math.ceil(state.timeLeft));
+  hud.timer.textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+  hud.score.textContent = `Skor ${state.score}`;
+  hud.rings.textContent = `Cincin ${state.ringsPassed}/${mission.rings}`;
+  hud.dist.textContent = `Landasan ${Math.round(distanceToRunway(plane, state.world) * 1.5)} m`;
+  hud.throttle.style.width = `${Math.round(plane.throttle * 100)}%`;
+  if (state.toast && state.time > state.toastUntil) {
+    hud.toast.classList.add("hidden");
+    state.toast = "";
   }
 }
 
-requestAnimationFrame(frame);
+function draw() {
+  drawScene(ctx, state, state.time);
+  drawGauges($("gAlt"), $("gSpd"), $("gHdg"), state.plane);
+}
+
+// Layar judul memakai dunia misi 1 dengan pesawat diam di tanah.
+let titleState = null;
+function getTitleState() {
+  if (!titleState) {
+    titleState = newGame(0);
+    titleState.phase = "title";
+    titleState.plane.x = 180;
+    titleState.plane.y = GROUND_Y - 16;
+    titleState.plane.speed = 0;
+    titleState.plane.throttle = 0;
+  }
+  return titleState;
+}
+
+let last = 0;
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000 || 0.016);
+  last = now;
+
+  if (input.pause !== prevPause) {
+    paused = input.pause;
+    prevPause = input.pause;
+    if (state) showToast(paused ? "Jeda — tekan P untuk lanjut" : "Lanjut terbang!");
+  }
+  if (input.muted !== prevMuted) {
+    prevMuted = input.muted;
+    audio.setMuted(input.muted);
+  }
+
+  if (state.phase === "title" || state.phase === "brief") {
+    // Layar judul memakai keadaan judulnya sendiri, bukan keadaan
+    // permainan terakhir — jadi misi dan dunia tidak pernah tertukar.
+    const ts = getTitleState();
+    ts.time += dt;
+    drawScene(ctx, ts, ts.time);
+    drawGauges($("gAlt"), $("gSpd"), $("gHdg"), ts.plane);
+  } else if (!paused) {
+    if (state.phase === "flying") update(dt);
+    updateHUD();
+    draw();
+  } else {
+    draw();
+  }
+  requestAnimationFrame(loop);
+}
+
+// Tombol-tombol layar.
+$("btnStart").addEventListener("click", () => {
+  audio.ensure();
+  state.phase = "brief";
+  showOverlay("overlayBrief");
+});
+$("btnFly").addEventListener("click", () => {
+  const idx = parseInt(document.querySelector(".mission-card.selected")?.dataset.mission || "0", 10);
+  startGame(idx);
+});
+$("btnAgain").addEventListener("click", () => {
+  state = getTitleState();
+  state.phase = "title";
+  showOverlay("overlayTitle");
+});
+document.querySelectorAll(".mission-card").forEach((card) => {
+  card.addEventListener("click", () => {
+    document.querySelectorAll(".mission-card").forEach((c) => c.classList.remove("selected"));
+    card.classList.add("selected");
+    const m = MISSIONS[parseInt(card.dataset.mission, 10)];
+    $("briefName").textContent = `Misi ${m.id} — ${m.name}`;
+    $("briefDesc").textContent = m.desc;
+  });
+});
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Enter" && state && state.phase === "title") {
+    audio.ensure();
+    state.phase = "brief";
+    showOverlay("overlayBrief");
+  }
+});
+
+// Boot: mode tangkapan layar menggambar satu frame beku,
+// permainan biasa mulai dari layar judul.
+(function boot() {
+  const { shot, seed } = parseShot();
+  if (["start", "play", "rings", "land"].includes(shot)) {
+    state = shotState(shot, seed);
+    freezeAnimations();
+    if (state.phase === "title") showOverlay("overlayTitle");
+    else showOverlay(null);
+    updateHUD();
+    draw();
+    return;
+  }
+  state = getTitleState();
+  state.phase = "title";
+  showOverlay("overlayTitle");
+  requestAnimationFrame(loop);
+})();

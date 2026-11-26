@@ -4,46 +4,35 @@
 
 # Terbang Nusantara
 
-Game terbang 2D yang berjalan dari file statis di desktop Chrome, tanpa jaringan.
-Terbang melintasi laut, pulau, dan gunung berapi di kepulauan Indonesia: lewati ring
-target, kumpulkan koin, hemat bahan bakar, dan mendarat mulus di landasan.
+Game terbang 2D: terbangkan pesawat kecil melintasi pulau-pulau Indonesia, lewati cincin bernomor sesuai urutan, kumpulkan koin Rp, hemat bahan bakar, dan mendarat di landasan sebelum waktu habis. Ada tiga misi dengan angin dan cuaca yang makin menantang, tiga pengukur di layar (ketinggian, kecepatan, arah), serta suara mesin yang mengikuti kecepatan.
 
 ## Cara main
 
-- **↑ / W** naik, **↓ / S** turun, **→ / D** tambah gas, **← / A** kurangi gas
-- **Spasi** boost, **mouse** seret untuk membelok, **P** jeda, **M** suara
-- Lewati semua ring untuk mengisi bahan bakar, lalu mendarat di landasan.
-- Menabrak burung atau daratan mengurangi 1 nyawa (3 nyawa).
+- **↑ / W** menanjak, **↓ / S** menukik
+- **→ / D** tambah gas, **← / A** kurangi gas
+- **Spasi** boost (boros bahan bakar)
+- **P** jeda, **M** bisu
+- **Seret mouse** di kanvas untuk kemudi
+
+Mendarat hanya bisa di landasan, rendah dan pelan (di bawah 260), setelah semua cincin dilewati. Kalau mendarat sebelum semua cincin lolos, pesawat memantul kembali dengan peringatan. Tabrakan dengan burung atau tanah mengurangi satu nyawa (3 nyawa). Bahan bakar habis, waktu habis, atau terbang melewati landasan berarti misi berakhir.
 
 ## Misi
 
-1. **Latihan Terbang** — langit cerah, 5 ring, 90 detik.
-2. **Antar Paket** — angin laut kencang, 7 ring, 110 detik.
-3. **Badai** — hujan, petir, angin berubah-ubah, 8 ring, 130 detik.
-
-HUD menampilkan altitude, speed, dan heading di alat ukur yang menyala,
-plus bahan bakar, skor, dan waktu tersisa.
-
-## Menjalankan
-
-```sh
-node serve.ts
-# buka http://localhost:8080
-```
+1. **Latihan Terbang** — 5 cincin, 8 koin, 90 detik, tanpa angin.
+2. **Antar Paket** — 7 cincin, 10 koin, 110 detik, angin 34.
+3. **Badai** — 8 cincin, 12 koin, 130 detik, angin 55, hujan dan petir.
 
 ## Struktur
 
-- `game/index.html` — tata letak, HUD, dan layar (judul, briefing, selesai)
-- `game/src/config.js` — angka penyeimbang dan definisi misi
-- `game/src/random.js` — RNG ber-seed untuk keadaan deterministik
-- `game/src/world.js` — peta misi: pulau, gunung berapi, ring, koin, burung, landasan
-- `game/src/plane.js` — fisika pesawat
-- `game/src/render.js` — semua gambar canvas dan alat ukur
-- `game/src/audio.js` — suara WebAudio (tanpa file audio)
-- `game/src/input.js` — keyboard dan mouse
-- `game/src/shots.js` — keadaan beku untuk screenshot (`?shot=start|play|rings|land`)
-- `game/src/main.js` — loop utama, misi, tabrakan, skor
-- `main.ts` — program penyerahan: menyalin game/ dan screenshots/ lalu menulis dossier.json
-- `screenshots/` — 4 tangkapan layar asli dari game ini
-
-Entry untuk [make.fun — Make the best flight game](https://make.fun/bounty/best-flight-game-20261126-0057).
+- `game/index.html` — kerangka halaman: kanvas, HUD, pengukur, dan overlay.
+- `game/src/config.js` — semua angka: fisika, misi, skor, palet warna.
+- `game/src/random.js` — angka acak ber-seed (mulberry32) dan pembantu.
+- `game/src/world.js` — membangun dunia misi: pulau, gunung berapi, cincin, koin, burung, landasan.
+- `game/src/plane.js` — keadaan dan gerak pesawat, tabrakan, syarat mendarat.
+- `game/src/render.js` — semua gambar: langit, laut, pulau, cincin, pesawat, pengukur.
+- `game/src/audio.js` — dengung mesin dan bunyi WebAudio.
+- `game/src/input.js` — keyboard dan seret mouse.
+- `game/src/shots.js` — keadaan beku `?shot=start|play|rings|land` untuk tangkapan layar.
+- `game/src/main.js` — loop utama, tabrakan, akhir misi, dan HUD.
+- `main.ts` — program serah: menyalin `game/` dan `screenshots/` lalu menulis `dossier.json`.
+- `vendor/makefun-game.ts` — pustaka dossier dari kit (tidak diubah).

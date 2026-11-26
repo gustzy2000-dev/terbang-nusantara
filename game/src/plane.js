@@ -1,109 +1,85 @@
-// Pesawat: posisi, kecepatan, bahan bakar, kerusakan, dan fisikanya.
-// Satu file, satu tugas: bagaimana pesawat bergerak.
+// Pesawat: keadaan dan geraknya.
+// Semua satuan piksel/detik; y membesar ke bawah (koordinat kanvas).
 
-import { PHYSICS, VIEW_H, GROUND_Y } from './config.js';
-import { clamp } from './random.js';
+import { GROUND_Y, PHYSICS } from "./config.js";
+import { clamp } from "./random.js";
 
 export function makePlane() {
   return {
-    x: 180,          // posisi dunia (px dari awal rute)
-    y: 300,          // posisi layar (px dari atas)
-    speed: 200,      // km/h
-    throttle: 0.5,   // 0..1
-    pitch: 0,        // sudut hidung, radian (-naik, +turun)
+    x: 180,
+    y: 300,
+    vy: 0,
+    speed: PHYSICS.cruiseSpeed,
+    throttle: 0.5,
     fuel: PHYSICS.maxFuel,
     hearts: PHYSICS.maxHearts,
+    invincible: 0,
     boost: false,
-    invincible: 0,   // detik kebal setelah tabrakan
-    propAngle: 0,
-    crashed: false,
-    landed: false,
   };
 }
 
-// Satu langkah fisika. input: {up, down, gas, brake, boost, steerY}
-// steerY: -1..1 dari seret mouse (negatif = naik). dt dalam detik.
+// Satu langkah simulasi. input: { climb, dive, throttleUp, throttleDown,
+// boost, drag } dengan drag -1..1 (negatif = tarik ke atas).
 export function stepPlane(plane, input, mission, dt) {
-  if (plane.crashed || plane.landed) return;
+  // Throttle naik/turun dengan tombol kiri-kanan (atau A/D).
+  const step = PHYSICS.throttleStep / 100;
+  if (input.throttleUp) plane.throttle = clamp(plane.throttle + step * dt, 0, 1);
+  if (input.throttleDown) plane.throttle = clamp(plane.throttle - step * dt, 0, 1);
 
-  // Throttle.
-  if (input.gas) plane.throttle = clamp(plane.throttle + 0.6 * dt, 0, 1);
-  if (input.brake) plane.throttle = clamp(plane.throttle - 0.6 * dt, 0, 1);
-
-  // Kecepatan dari throttle + boost + angin.
-  const target = PHYSICS.minSpeed +
-    (PHYSICS.maxSpeed - PHYSICS.minSpeed) * plane.throttle;
-  plane.speed += (target - plane.speed) * Math.min(1, 1.4 * dt);
+  // Kecepatan mengejar target dari throttle; boost menambah kecepatan.
+  let target = PHYSICS.minSpeed + plane.throttle * (PHYSICS.maxSpeed - PHYSICS.minSpeed);
   plane.boost = !!input.boost && plane.fuel > 0;
-  if (plane.boost) plane.speed += PHYSICS.boostSpeed * dt;
-  plane.speed = clamp(plane.speed - mission.wind * 0.12 * dt, 60, PHYSICS.maxSpeed + 140);
+  if (plane.boost) target += PHYSICS.boostSpeed;
+  const rate = 120;
+  if (plane.speed < target) plane.speed = Math.min(target, plane.speed + rate * dt);
+  else plane.speed = Math.max(target, plane.speed - rate * dt);
 
-  // Gerak maju.
-  const pxPerSec = plane.speed * 1.9;
-  plane.x += pxPerSec * dt;
+  // Menanjak mengorbankan kecepatan, menukik menambahnya sedikit.
+  const climbing = input.climb || input.drag < -0.2;
+  const diving = input.dive || input.drag > 0.2;
+  if (climbing) plane.speed = Math.max(PHYSICS.minSpeed, plane.speed - 20 * dt);
+  if (diving) plane.speed = Math.min(PHYSICS.maxSpeed + PHYSICS.boostSpeed, plane.speed + 15 * dt);
 
-  // Gerak naik/turun: tombol, atau seret mouse.
-  let climb = 0;
-  if (input.up) climb -= 1;
-  if (input.down) climb += 1;
-  if (input.steerY !== 0) climb = input.steerY;
-  const vertical = climb * PHYSICS.climbRate +
-    (plane.speed < PHYSICS.minSpeed + 20 ? PHYSICS.gravity * 1.6 : PHYSICS.gravity * 0.35);
-  plane.y += vertical * dt;
+  // Gerak vertikal: menanjak, menukik, atau melayang karena daya angkat.
+  if (climbing) plane.vy = -PHYSICS.climbRate;
+  else if (diving) plane.vy = PHYSICS.sinkRate;
+  else plane.vy = PHYSICS.gravity - PHYSICS.lift * (plane.speed / PHYSICS.maxSpeed);
 
-  // Pitch mengikuti arah gerak.
-  const targetPitch = clamp(vertical / 260, -0.45, 0.45);
-  plane.pitch += (targetPitch - plane.pitch) * Math.min(1, 6 * dt);
+  plane.y += plane.vy * dt;
+  plane.x += plane.speed * dt + mission.wind * 0.3 * dt;
+  if (plane.y < 40) plane.y = 40;
 
-  // Bahan bakar.
-  plane.fuel -= (PHYSICS.fuelDrain + (plane.boost ? PHYSICS.boostDrain : 0)) * dt;
-  if (plane.fuel <= 0) {
-    plane.fuel = 0;
-    plane.throttle = Math.max(0, plane.throttle - 0.4 * dt);
-  }
-
-  // Batas langit dan laut.
-  if (plane.y < 60) plane.y = 60;
-  if (plane.y > GROUND_Y - 14) plane.y = GROUND_Y - 14;
+  // Bahan bakar: terbang biasa boros sedikit, boost boros banyak.
+  plane.fuel -= PHYSICS.fuelDrain * dt;
+  if (plane.boost) plane.fuel -= PHYSICS.boostDrain * dt;
+  if (plane.fuel < 0) plane.fuel = 0;
 
   if (plane.invincible > 0) plane.invincible -= dt;
-  plane.propAngle += dt * (6 + plane.throttle * 26);
 }
 
-// Ketinggian dalam meter (0 di permukaan laut).
 export function altitudeOf(plane) {
   return Math.max(0, Math.round((GROUND_Y - plane.y) * 1.5));
 }
 
-// Heading: 090 = timur (maju), berubah sedikit dengan pitch.
+// Arah hadap dalam derajat: positif = menanjak, negatif = menukik.
 export function headingOf(plane) {
-  const deg = 90 + plane.pitch * 57;
-  return Math.round(((deg % 360) + 360) % 360);
+  const deg = (Math.atan2(-plane.vy, Math.max(1, plane.speed)) * 180) / Math.PI;
+  return Math.round(clamp(deg, -45, 45));
 }
 
-// Kerusakan sekali: kurangi hati, beri kebal 2 detik, pantulkan pesawat ke atas.
+// Tabrakan dengan burung atau tanah. Mengembalikan true kalau nyawa berkurang.
 export function damagePlane(plane) {
-  if (plane.invincible > 0 || plane.crashed) return false;
+  if (plane.invincible > 0) return false;
   plane.hearts -= 1;
   plane.invincible = 2;
-  plane.y -= 46;
-  plane.speed = Math.max(120, plane.speed - 60);
-  if (plane.hearts <= 0) {
-    plane.crashed = true;
-  }
   return true;
 }
 
-// Mendarat: pesawat di atas landasan, rendah, dan pelan.
-export function tryLand(plane, world) {
-  const rw = world.runway;
-  const onRunway = plane.x >= rw.x - 40 && plane.x <= rw.x + rw.w + 60;
-  const low = plane.y >= GROUND_Y - 60;
+// Syarat mendarat: di atas landasan, rendah, dan pelan.
+export function canLand(plane, world) {
+  const r = world.runway;
+  const overRunway = plane.x >= r.x && plane.x <= r.x + r.w;
+  const low = plane.y >= GROUND_Y - 30;
   const slow = plane.speed < 260;
-  if (onRunway && low && slow) {
-    plane.landed = true;
-    plane.y = GROUND_Y - 14;
-    return true;
-  }
-  return false;
+  return overRunway && low && slow;
 }

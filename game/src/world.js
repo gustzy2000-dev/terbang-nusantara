@@ -1,111 +1,105 @@
-// Dunia misi: daratan, laut, pulau, gunung berapi, ring, koin, burung, dan landasan.
-// Dibangun sekali per misi dari seed, jadi tiap misi punya peta yang sama di setiap main.
-// Satu file, satu tugas: isi peta.
+// Dunia misi: pulau, gunung berapi, cincin, koin, burung, dan landasan.
+// Dibangun dari seed supaya misi yang sama selalu punya dunia yang sama.
 
-import { makeRng, pickRange, pickInt } from './random.js';
-import { GROUND_Y, VIEW_H } from './config.js';
+import { GROUND_Y } from "./config.js";
+import { makeRng, pickRange, pickInt } from "./random.js";
 
-// Ketinggian daratan (permukaan tanah) pada posisi x dunia, 0..distance.
-// Laut = GROUND_Y, pulau = lebih tinggi, gunung = jauh lebih tinggi.
 export function buildWorld(mission, seed) {
-  const rng = makeRng(seed);
+  const rng = makeRng(seed * 1000 + mission.id * 77 + 13);
   const distance = mission.distance;
+
+  // Pulau-pulau di sepanjang rute, masing-masing dengan beberapa palem.
   const islands = [];
-  const peaks = [];
   let x = 500;
   while (x < distance - 900) {
-    const kind = rng();
-    if (kind < 0.45) {
-      // Pulau hijau dengan palem.
-      const w = pickRange(rng, 320, 620);
-      islands.push({ x, w, h: pickRange(rng, 60, 130), palms: pickInt(rng, 2, 6) });
-      x += w + pickRange(rng, 500, 900);
-    } else if (kind < 0.7) {
-      // Gunung berapi.
-      const w = pickRange(rng, 420, 640);
-      peaks.push({ x, w, h: pickRange(rng, 190, 300), smoke: rng() < 0.8 });
-      x += w + pickRange(rng, 600, 1000);
-    } else {
-      // Hamparan laut terbuka.
-      x += pickRange(rng, 700, 1200);
+    const w = pickRange(rng, 260, 520);
+    const h = pickRange(rng, 60, 140);
+    const palms = [];
+    const nPalms = pickInt(rng, 2, 5);
+    for (let i = 0; i < nPalms; i++) {
+      palms.push({ dx: pickRange(rng, 20, w - 20), h: pickRange(rng, 26, 44) });
     }
+    islands.push({ x, w, h, palms });
+    x += w + pickRange(rng, 380, 700);
   }
 
-  // Ring target: berbaris dari awal sampai dekat landasan, ketinggian bervariasi.
-  const rings = [];
-  const gap = (distance - 1400) / mission.rings;
-  for (let i = 0; i < mission.rings; i++) {
-    rings.push({
-      x: 700 + gap * i + pickRange(rng, -80, 80),
-      y: pickRange(rng, 180, 420),
-      r: 52,
-      passed: false,
-      id: i + 1,
+  // Dua sampai tiga puncak gunung berapi di antara pulau.
+  const volcanoes = [];
+  const nVolc = pickInt(rng, 2, 3);
+  for (let i = 0; i < nVolc; i++) {
+    volcanoes.push({
+      x: pickRange(rng, 900, distance - 900),
+      h: pickRange(rng, 150, 240),
+      w: pickRange(rng, 200, 300),
     });
   }
 
-  // Koin di antara ring.
+  // Cincin bernomor, tersebar merata dari awal sampai sebelum landasan.
+  const rings = [];
+  const firstX = 700;
+  const lastX = distance - 700;
+  for (let i = 0; i < mission.rings; i++) {
+    const t = mission.rings === 1 ? 0.5 : i / (mission.rings - 1);
+    rings.push({
+      index: i,
+      x: firstX + (lastX - firstX) * t + pickRange(rng, -60, 60),
+      y: pickRange(rng, 180, 480),
+      r: 52,
+      passed: false,
+    });
+  }
+
+  // Koin "Rp" tersebar di antara cincin.
   const coins = [];
   for (let i = 0; i < mission.coins; i++) {
     coins.push({
-      x: pickRange(rng, 600, distance - 1200),
-      y: pickRange(rng, 200, 460),
+      x: pickRange(rng, 600, distance - 600),
+      y: pickRange(rng, 200, 500),
+      r: 14,
       taken: false,
-      spin: rng() * Math.PI * 2,
+      phase: pickRange(rng, 0, Math.PI * 2),
     });
   }
 
-  // Burung penghalang: terbang bolak-balik di jalurnya.
+  // Burung berpatroli di sekitar titik tetapnya.
   const birds = [];
   for (let i = 0; i < mission.birds; i++) {
     birds.push({
-      x: pickRange(rng, 1200, distance - 1500),
-      y: pickRange(rng, 200, 440),
-      baseY: 0,
-      speed: pickRange(rng, 40, 90) * (rng() < 0.5 ? 1 : -1),
-      wing: rng() * Math.PI * 2,
+      baseX: pickRange(rng, 900, distance - 900),
+      baseY: pickRange(rng, 200, 450),
+      phase: pickRange(rng, 0, Math.PI * 2),
+      speed: pickRange(rng, 0.5, 1.1),
+      r: 18,
     });
   }
-  birds.forEach((b) => { b.baseY = b.y; });
 
-  // Landasan di ujung rute.
   const runway = { x: distance - 320, w: 320, y: GROUND_Y };
 
-  return { distance, islands, peaks, rings, coins, birds, runway, seed };
+  return { mission, seed, distance, islands, volcanoes, rings, coins, birds, runway };
 }
 
-// Ketinggian permukaan tanah pada posisi x (untuk tabrakan dan gambar).
-export function groundHeightAt(world, x) {
-  let top = GROUND_Y;
+// Tinggi tanah di posisi x: puncak pulau atau gunung, kalau tidak laut.
+export function groundHeightAt(x, world) {
+  let ground = GROUND_Y;
   for (const isl of world.islands) {
     if (x >= isl.x && x <= isl.x + isl.w) {
-      const t = (x - isl.x) / isl.w;
-      const hump = Math.sin(t * Math.PI);
-      top = Math.min(top, GROUND_Y - isl.h * hump);
+      ground = Math.min(ground, GROUND_Y - isl.h);
     }
   }
-  for (const p of world.peaks) {
-    if (x >= p.x && x <= p.x + p.w) {
-      const t = (x - p.x) / p.w;
-      const tri = t < 0.5 ? t * 2 : (1 - t) * 2;
-      top = Math.min(top, GROUND_Y - p.h * tri);
+  for (const v of world.volcanoes) {
+    const half = v.w / 2;
+    if (x >= v.x - half && x <= v.x + half) {
+      const t = 1 - Math.abs(x - v.x) / half;
+      ground = Math.min(ground, GROUND_Y - v.h * t);
     }
   }
-  // Landasan rata di ujung.
-  if (x >= world.runway.x && x <= world.runway.x + world.runway.w) {
-    top = Math.min(top, GROUND_Y);
-  }
-  return top;
+  return ground;
 }
 
-// Apakah titik (x, y) menabrak daratan.
-export function hitsGround(world, x, y) {
-  return y >= groundHeightAt(world, x);
+export function hitsGround(plane, world) {
+  return plane.y + 14 >= groundHeightAt(plane.x, world);
 }
 
-// Jarak mendatar tersisa sampai landasan.
-export function distanceToRunway(world, x) {
-  return Math.max(0, world.runway.x - x);
+export function distanceToRunway(plane, world) {
+  return Math.max(0, Math.round(world.runway.x - plane.x));
 }
-
-export { VIEW_H };

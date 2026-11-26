@@ -1,9 +1,10 @@
-// RNG ber-seed (mulberry32) supaya keadaan ?shot= selalu sama di setiap muat ulang.
-// Satu file, satu tugas: angka acak yang bisa diulang.
+// Angka acak yang bisa diulang: seed yang sama, dunia yang sama.
+// Dipakai supaya setiap misi selalu punya tata letak yang sama,
+// dan supaya tangkapan layar (?shot=...&seed=...) deterministik.
 
 export function makeRng(seed) {
   let a = seed >>> 0;
-  return function next() {
+  return function () {
     a |= 0;
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
