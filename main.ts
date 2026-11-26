@@ -3,12 +3,18 @@
 
 import { buildDossier } from "./vendor/makefun-game.ts";
 import { cp, mkdir, stat, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+// Jalur sumber dihitung dari lokasi berkas ini, bukan dari direktori
+// kerja saat ini — penilai menjalankan `node /bot/main.ts` dari mana saja.
+const repoRoot = dirname(fileURLToPath(import.meta.url));
 
 const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
 
 await mkdir(outDir, { recursive: true });
-await cp("game", `${outDir}/game`, { recursive: true });
-await cp("screenshots", `${outDir}/screenshots`, { recursive: true });
+await cp(join(repoRoot, "game"), `${outDir}/game`, { recursive: true });
+await cp(join(repoRoot, "screenshots"), `${outDir}/screenshots`, { recursive: true });
 
 // buildDossier mengembalikan dossier sebagai byte JSON kanonis
 // (tidak menulis berkas sendiri) — jadi tulis sendiri ke dossier.json.
